@@ -6,6 +6,19 @@ import { tmpdir } from 'node:os';
 const TMP_BASE = join(tmpdir(), 'cpm-knowledge-extractor');
 
 /**
+ * Check if gh CLI is available and authenticated
+ * @returns {boolean}
+ */
+function hasGhCli() {
+  try {
+    execSync('gh auth status', { encoding: 'utf-8', stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Check if input is a local repo path
  * @param {string} input
  * @returns {boolean}
@@ -19,6 +32,25 @@ export function isLocalRepo(input) {
 }
 
 /**
+ * Parse owner/name from a GitHub URL or shorthand (e.g. "owner/repo")
+ * @param {string} repoUrl
+ * @returns {{ owner: string, name: string } | null}
+ */
+export function parseRepoIdentifier(repoUrl) {
+  // Full URL: https://github.com/owner/repo or git@github.com:owner/repo
+  const urlMatch = repoUrl.match(/github\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/);
+  if (urlMatch) {
+    return { owner: urlMatch[1], name: urlMatch[2] };
+  }
+  // Shorthand: owner/repo
+  const shortMatch = repoUrl.match(/^([\w.-]+)\/([\w.-]+)$/);
+  if (shortMatch) {
+    return { owner: shortMatch[1], name: shortMatch[2] };
+  }
+  return null;
+}
+
+/**
  * Extract repo info from a local or cloned repo
  * @param {string} repoPath
  * @returns {{ owner: string, name: string, url: string }}
@@ -26,9 +58,9 @@ export function isLocalRepo(input) {
 export function getRepoInfo(repoPath) {
   try {
     const remote = execSync('git remote get-url origin', { cwd: repoPath, encoding: 'utf-8' }).trim();
-    const match = remote.match(/github\.com[/:](.*?)\/(.*?)(\.git)?$/);
-    if (match) {
-      return { owner: match[1], name: match[2], url: `https://github.com/${match[1]}/${match[2]}` };
+    const parsed = parseRepoIdentifier(remote);
+    if (parsed) {
+      return { ...parsed, url: `https://github.com/${parsed.owner}/${parsed.name}` };
     }
     return { owner: 'unknown', name: basename(repoPath), url: remote };
   } catch {
@@ -37,8 +69,11 @@ export function getRepoInfo(repoPath) {
 }
 
 /**
- * Shallow clone a repo to tmp directory
- * @param {string} repoUrl
+ * Shallow clone a repo to tmp directory.
+ * Uses `gh repo clone` (inherits CLI auth for private repos) with fallback to plain git.
+ * Also supports shorthand "owner/repo" format.
+ *
+ * @param {string} repoUrl - GitHub URL or "owner/repo" shorthand
  * @returns {Promise<{ path: string, info: { owner: string, name: string, url: string } }>}
  */
 export async function cloneRepo(repoUrl) {
@@ -46,14 +81,12 @@ export async function cloneRepo(repoUrl) {
     mkdirSync(TMP_BASE, { recursive: true });
   }
 
-  // Parse repo name from URL
-  const match = repoUrl.match(/github\.com[/:](.*?)\/(.*?)(\.git)?$/);
-  if (!match) {
-    throw new Error(`Cannot parse GitHub URL: ${repoUrl}`);
+  const parsed = parseRepoIdentifier(repoUrl);
+  if (!parsed) {
+    throw new Error(`Cannot parse GitHub repo: ${repoUrl}. Use a URL or owner/repo shorthand.`);
   }
 
-  const owner = match[1];
-  const name = match[2];
+  const { owner, name } = parsed;
   const targetDir = join(TMP_BASE, `${owner}--${name}`);
 
   // Remove existing clone if present
@@ -61,11 +94,24 @@ export async function cloneRepo(repoUrl) {
     execSync(`rm -rf ${targetDir}`);
   }
 
-  // Shallow clone — only latest commit, no blobs for non-essential files
-  execSync(`git clone --depth 1 --single-branch ${repoUrl} ${targetDir}`, {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  const useGh = hasGhCli();
+
+  if (useGh) {
+    // gh repo clone inherits CLI auth — works for private repos
+    console.log(`[INFO] Using gh CLI (authenticated) for clone`);
+    execSync(`gh repo clone ${owner}/${name} ${targetDir} -- --depth 1 --single-branch`, {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+  } else {
+    // Fallback: plain git clone (public repos only, or if GITHUB_TOKEN is in env)
+    const url = `https://github.com/${owner}/${name}`;
+    console.log(`[INFO] Using git clone (gh CLI not available — private repos may fail)`);
+    execSync(`git clone --depth 1 --single-branch ${url} ${targetDir}`, {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+  }
 
   return {
     path: targetDir,

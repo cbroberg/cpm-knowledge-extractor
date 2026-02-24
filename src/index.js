@@ -1,62 +1,65 @@
 #!/usr/bin/env node
 
-import { parseArgs } from 'node:util';
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { config } from 'dotenv';
-import { cloneRepo, isLocalRepo, getRepoInfo } from './clone.js';
-import { discoverFiles } from './discover.js';
+import { cloneRepo, isLocalRepo, getRepoInfo, parseRepoIdentifier } from './clone.js';
 import { detectStack } from './detect-stack.js';
+import { discoverFiles } from './discover.js';
 import { extractKnowledge } from './extract.js';
 import { classifyFragments } from './classify.js';
 import { writeOutput } from './output.js';
-import { readFileSync } from 'node:fs';
 
-config();
-
-const { values, positionals } = parseArgs({
-  allowPositionals: true,
-  options: {
-    output: { type: 'string', short: 'o', default: '' },
-    batch: { type: 'string', short: 'b', default: '' },
-    format: { type: 'string', short: 'f', default: 'json' },
-    verbose: { type: 'boolean', short: 'v', default: false },
-    help: { type: 'boolean', short: 'h', default: false },
-  },
-});
-
-if (values.help || (positionals.length === 0 && !values.batch)) {
+// Parse CLI arguments
+const args = process.argv.slice(2);
+if (args.includes('-h') || args.includes('--help') || args.length === 0) {
   console.log(`
 cpm-knowledge-extractor v0.1.0
 
 Usage:
-  node src/index.js <repo-url-or-path> [options]
+  node src/index.js <repo-url-or-owner/repo> [options]
   node src/index.js --batch repos.txt [options]
 
 Options:
   -o, --output <file>    Output file path (default: output/<repo-name>.json)
-  -b, --batch <file>     File with one repo URL per line
+  -b, --batch <file>     File with one repo URL/shorthand per line
   -f, --format <format>  Output format: json (default) or yaml
   -v, --verbose          Verbose logging
   -h, --help             Show this help
 
+Auth:
+  Uses \`gh\` CLI for cloning (inherits your GitHub auth for private repos).
+  Falls back to plain git if gh is not available.
+
 Examples:
-  node src/index.js https://github.com/shadcn-ui/ui
-  node src/index.js /path/to/local/repo
+  node src/index.js webhousecode/fysiodk-aalborg-sport     # Private repo via gh
+  node src/index.js shadcn-ui/ui                           # Public repo shorthand
+  node src/index.js https://github.com/shadcn-ui/ui       # Full URL
+  node src/index.js /path/to/local/repo                    # Local repo
   node src/index.js --batch repos.txt --output combined.json
   `);
   process.exit(0);
 }
 
-async function processRepo(repoInput) {
-  const log = (msg) => values.verbose && console.log(`[INFO] ${msg}`);
-  const warn = (msg) => console.warn(`[WARN] ${msg}`);
+const verbose = args.includes('-v') || args.includes('--verbose');
+const batchIdx = args.indexOf('--batch') !== -1 ? args.indexOf('--batch') : args.indexOf('-b');
+const outputIdx = args.indexOf('--output') !== -1 ? args.indexOf('--output') : args.indexOf('-o');
+const outputFile = outputIdx !== -1 ? args[outputIdx + 1] : null;
 
+function log(msg) {
+  if (verbose) console.log(`[INFO] ${msg}`);
+}
+
+async function processRepo(repoInput) {
   try {
     // Step 1: Clone or locate repo
     let repoPath;
     let repoInfo;
 
-    if (isLocalRepo(repoInput)) {
+    // Check if it's a GitHub shorthand (owner/repo) — not a local path
+    const parsed = parseRepoIdentifier(repoInput);
+    const isShorthand = parsed && !repoInput.includes('/') === false && !isLocalRepo(repoInput);
+
+    if (!isShorthand && isLocalRepo(repoInput)) {
       repoPath = resolve(repoInput);
       repoInfo = getRepoInfo(repoPath);
       log(`Using local repo: ${repoPath}`);
@@ -68,35 +71,35 @@ async function processRepo(repoInput) {
       log(`Cloned to: ${repoPath}`);
     }
 
-    // Step 2: Detect tech stack
+    // Step 2: Detect stack
     log('Detecting stack...');
     const stack = await detectStack(repoPath);
-    log(`Stack detected: ${stack.map(s => s.name).join(', ') || 'unknown'}`);
+    log(`Stack detected: ${stack.map(s => s.name).join(', ')}`);
 
-    // Step 3: Discover knowledge-bearing files
+    // Step 3: Discover knowledge files
     log('Discovering knowledge files...');
     const files = await discoverFiles(repoPath);
     log(`Found ${files.length} knowledge sources`);
 
     if (files.length === 0) {
-      warn('No knowledge-bearing files found in this repo');
+      console.log(`[WARN] No knowledge files found in ${repoInput}`);
       return [];
     }
 
-    // Step 4: Extract raw knowledge blocks
+    // Step 4: Extract knowledge blocks
     log('Extracting knowledge...');
-    const rawBlocks = await extractKnowledge(files, repoPath);
-    log(`Extracted ${rawBlocks.length} raw knowledge blocks`);
+    const blocks = await extractKnowledge(files);
+    log(`Extracted ${blocks.length} raw knowledge blocks`);
 
-    // Step 5: Classify and structure into Knowledge Fragments
+    // Step 5: Classify into Knowledge Fragments
     log('Classifying fragments...');
-    const fragments = classifyFragments(rawBlocks, stack, repoInfo);
+    const fragments = classifyFragments(blocks, stack, repoInfo);
     log(`Produced ${fragments.length} Knowledge Fragments`);
 
-    return fragments;
-  } catch (error) {
-    console.error(`[ERROR] Failed to process ${repoInput}: ${error.message}`);
-    return [];
+    return { fragments, stack, repoInfo };
+  } catch (err) {
+    console.error(`[ERROR] Failed to process ${repoInput}: ${err.message}`);
+    return { fragments: [], stack: [], repoInfo: null };
   }
 }
 
@@ -105,39 +108,79 @@ async function main() {
 
   let repos = [];
 
-  if (values.batch) {
-    const batchContent = readFileSync(values.batch, 'utf-8');
-    repos = batchContent
+  if (batchIdx !== -1) {
+    // Batch mode: read repos from file
+    const batchFile = args[batchIdx + 1];
+    const content = await readFile(batchFile, 'utf-8');
+    repos = content
       .split('\n')
-      .map(line => line.trim())
-      .filter(line => line && !line.startsWith('#'));
-    console.log(`[INFO] Batch mode: ${repos.length} repos to process`);
+      .map(l => l.trim())
+      .filter(l => l && !l.startsWith('#'));
   } else {
-    repos = positionals;
+    // Single repo mode
+    repos = [args.find(a => !a.startsWith('-') && a !== args[outputIdx + 1])];
   }
 
-  let allFragments = [];
+  const allFragments = [];
+  const allSources = [];
+  const allStack = [];
 
   for (const repo of repos) {
     console.log(`\n[INFO] Processing: ${repo}`);
-    console.log('[INFO] ' + '─'.repeat(60));
-    const fragments = await processRepo(repo);
-    allFragments = allFragments.concat(fragments);
-    console.log(`[INFO] ✓ ${fragments.length} fragments extracted`);
+    console.log(`[INFO] ${'─'.repeat(60)}`);
+
+    const result = await processRepo(repo);
+    if (result.fragments?.length > 0) {
+      allFragments.push(...result.fragments);
+      allSources.push(`${result.repoInfo.owner}/${result.repoInfo.name}`);
+      for (const s of result.stack) {
+        if (!allStack.find(e => e.name === s.name)) allStack.push(s);
+      }
+    }
+    console.log(`[INFO] ✓ ${result.fragments?.length || 0} fragments extracted`);
+  }
+
+  if (allFragments.length === 0) {
+    console.log('\n[WARN] No Knowledge Fragments extracted from any repo');
+    process.exit(0);
   }
 
   // Write output
-  if (allFragments.length > 0) {
-    const outputPath = values.output || undefined;
-    const written = await writeOutput(allFragments, { path: outputPath, format: values.format });
-    console.log(`\n[INFO] ✓ Total: ${allFragments.length} Knowledge Fragments`);
-    console.log(`[INFO] ✓ Written to: ${written}`);
-  } else {
-    console.log('\n[WARN] No Knowledge Fragments extracted from any repo');
+  const outputPath = outputFile || `output/${allSources[0]?.replace('/', '--') || 'unknown'}.json`;
+  await writeOutput(allFragments, allSources, allStack, outputPath);
+
+  // Print summary
+  const categories = {};
+  const confidences = {};
+  for (const f of allFragments) {
+    categories[f.category] = (categories[f.category] || 0) + 1;
+    confidences[f.confidence] = (confidences[f.confidence] || 0) + 1;
   }
+
+  console.log('\n' + '═'.repeat(60));
+  console.log('  EXTRACTION SUMMARY');
+  console.log('═'.repeat(60));
+  console.log(`  Sources:    ${allSources.join(', ')}`);
+  console.log(`  Stack:      ${allStack.map(s => s.version ? `${s.name}@${s.version}` : s.name).join(', ')}`);
+  console.log(`  Fragments:  ${allFragments.length}`);
+  console.log('');
+  console.log('  By category:');
+  for (const [cat, count] of Object.entries(categories).sort((a, b) => b[1] - a[1])) {
+    console.log(`    ${cat}: ${count}`);
+  }
+  console.log('');
+  console.log('  By confidence:');
+  for (const [conf, count] of Object.entries(confidences).sort((a, b) => b[1] - a[1])) {
+    console.log(`    ${conf}: ${count}`);
+  }
+  console.log('═'.repeat(60));
+  console.log('');
+
+  console.log(`\n[INFO] ✓ Total: ${allFragments.length} Knowledge Fragments`);
+  console.log(`[INFO] ✓ Written to: ${outputPath}`);
 }
 
 main().catch(err => {
-  console.error(`[ERROR] ${err.message}`);
+  console.error(`[FATAL] ${err.message}`);
   process.exit(1);
 });

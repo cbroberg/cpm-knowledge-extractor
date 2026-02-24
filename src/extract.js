@@ -1,47 +1,29 @@
 import { readFile } from 'node:fs/promises';
-
-/**
- * @typedef {Object} RawKnowledgeBlock
- * @property {string} content - The raw text content
- * @property {string} file - Source file relative path
- * @property {string} category - File category from discovery
- * @property {number} priority - Source priority
- * @property {number} lineStart - Starting line number
- * @property {number} lineEnd - Ending line number
- * @property {string} section - Section heading if applicable
- */
+import { basename } from 'node:path';
 
 /**
  * Extract knowledge blocks from discovered files
- * @param {Array} files - Discovered files from discover.js
- * @param {string} repoPath
- * @returns {Promise<RawKnowledgeBlock[]>}
+ * @param {Array<{ path: string, priority: number }>} files
+ * @returns {Promise<Array<{ file: string, section: string, content: string, line: number }>>}
  */
-export async function extractKnowledge(files, repoPath) {
+export async function extractKnowledge(files) {
   const blocks = [];
 
-  for (const file of files) {
+  for (const { path: filePath } of files) {
     try {
-      const content = await readFile(file.path, 'utf-8');
+      const content = await readFile(filePath, 'utf-8');
+      const fileName = basename(filePath);
 
-      if (file.category === 'linting' || file.category === 'typescript' || file.category === 'formatting') {
-        // Config files: extract as a single block
-        blocks.push({
-          content,
-          file: file.relativePath,
-          category: file.category,
-          priority: file.priority,
-          lineStart: 1,
-          lineEnd: content.split('\n').length,
-          section: file.relativePath,
-        });
+      if (fileName.endsWith('.md')) {
+        blocks.push(...extractMarkdownSections(content, fileName));
+      } else if (fileName.endsWith('.json')) {
+        blocks.push(...extractJsonConfig(content, fileName));
       } else {
-        // Markdown/text files: split by sections
-        const sectionBlocks = splitBySections(content, file);
-        blocks.push(...sectionBlocks);
+        // Config files (.eslintrc, .prettierrc, etc.)
+        blocks.push(...extractConfigFile(content, fileName));
       }
-    } catch (error) {
-      console.warn(`[WARN] Could not read ${file.relativePath}: ${error.message}`);
+    } catch (err) {
+      console.error(`[WARN] Failed to read ${filePath}: ${err.message}`);
     }
   }
 
@@ -49,55 +31,47 @@ export async function extractKnowledge(files, repoPath) {
 }
 
 /**
- * Split markdown content into section-based blocks
- * @param {string} content
- * @param {Object} file
- * @returns {RawKnowledgeBlock[]}
+ * Split markdown into sections by ## headings
+ * Each section becomes a potential Knowledge Fragment
  */
-function splitBySections(content, file) {
-  const lines = content.split('\n');
+function extractMarkdownSections(content, fileName) {
   const blocks = [];
+  const lines = content.split('\n');
   let currentSection = 'preamble';
-  let currentLines = [];
-  let sectionStart = 1;
+  let sectionContent = '';
+  let sectionStartLine = 1;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const headingMatch = line.match(/^(#{1,3})\s+(.+)/);
 
-    if (headingMatch && currentLines.length > 0) {
+    // Detect section headings (## or ###)
+    const headingMatch = line.match(/^#{1,3}\s+(.+)/);
+    if (headingMatch) {
       // Save previous section
-      const sectionContent = currentLines.join('\n').trim();
-      if (sectionContent && hasKnowledgeSignal(sectionContent)) {
+      if (sectionContent && hasKnowledgeSignal(sectionContent, currentSection)) {
         blocks.push({
-          content: sectionContent,
-          file: file.relativePath,
-          category: file.category,
-          priority: file.priority,
-          lineStart: sectionStart,
-          lineEnd: i,
+          file: fileName,
           section: currentSection,
+          content: sectionContent.trim(),
+          line: sectionStartLine,
         });
       }
-      currentSection = headingMatch[2].trim();
-      currentLines = [line];
-      sectionStart = i + 1;
+
+      currentSection = headingMatch[1].trim();
+      sectionContent = line + '\n';
+      sectionStartLine = i + 1;
     } else {
-      currentLines.push(line);
+      sectionContent += line + '\n';
     }
   }
 
   // Don't forget the last section
-  const lastContent = currentLines.join('\n').trim();
-  if (lastContent && hasKnowledgeSignal(lastContent)) {
+  if (lastContent && hasKnowledgeSignal(lastContent, currentSection)) {
     blocks.push({
-      content: lastContent,
-      file: file.relativePath,
-      category: file.category,
-      priority: file.priority,
-      lineStart: sectionStart,
-      lineEnd: lines.length,
+      file: fileName,
       section: currentSection,
+      content: sectionContent.trim(),
+      line: sectionStartLine,
     });
   }
 
@@ -105,30 +79,79 @@ function splitBySections(content, file) {
 }
 
 /**
+ * Extract rules from JSON config files (eslint, tsconfig, etc.)
+ */
+function extractJsonConfig(content, fileName) {
+  try {
+    const config = JSON.parse(content);
+    const configStr = JSON.stringify(config, null, 2);
+
+    if (configStr.length < 50) return [];
+
+    return [{
+      file: fileName,
+      section: fileName.replace(/\.[^.]+$/, ''),
+      content: configStr.slice(0, 2000),
+      line: 1,
+    }];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Extract from plain config files
+ */
+function extractConfigFile(content, fileName) {
+  if (content.length < 30) return [];
+
+  return [{
+    file: fileName,
+    section: fileName,
+    content: content.slice(0, 2000),
+    line: 1,
+  }];
+}
+
+/**
  * Heuristic: does this content block contain useful knowledge?
- * Filters out boilerplate, license text, etc.
+ * Filters out boilerplate, license text, preambles, etc.
  * @param {string} content
+ * @param {string} section - Section heading
  * @returns {boolean}
  */
-function hasKnowledgeSignal(content) {
+function hasKnowledgeSignal(content, section = 'preamble') {
   // Too short to be useful
-  if (content.length < 30) return false;
+  if (content.length < 50) return false;
+
+  // Skip preamble sections that are just warnings/intros (no actionable knowledge)
+  if (section === 'preamble') {
+    const lines = content.split('\n').filter(l => l.trim().length > 0);
+    // Preamble with < 3 substantive lines is likely just a header/warning
+    if (lines.length < 3) return false;
+  }
 
   // Skip license/legal boilerplate
   const lowerContent = content.toLowerCase();
   if (lowerContent.includes('mit license') || lowerContent.includes('apache license')) return false;
   if (lowerContent.startsWith('copyright')) return false;
 
-  // Look for positive signals
+  // Skip session logs / changelogs (high noise, low reusable knowledge)
+  if (section && /^(session|seneste session|changelog|v\d)/i.test(section)) return false;
+
+  // Look for positive signals (English + Danish)
   const signals = [
     /must|should|always|never|don't|avoid|prefer|require/i,
+    /skal|altid|aldrig|undgå|brug ikke|foretrækker|påkrævet|obligatorisk/i,
     /pattern|convention|rule|standard|best practice/i,
+    /mønster|konvention|regel|vigtigt/i,
     /import|export|async|await|function|class|const|let/i,
     /error|test|lint|format|style|security|auth/i,
     /```/,  // Code blocks are almost always useful
     /\*\*.*\*\*/, // Bold text often marks important rules
     /- \[[ x]\]/, // Checklists
     /^\s*[-*]\s/m, // Bullet lists
+    /[❌✅⚠️]/,  // Emoji signals used in rule docs
   ];
 
   return signals.some(signal => signal.test(content));
