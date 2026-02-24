@@ -1,29 +1,6 @@
 import { createHash } from 'node:crypto';
 
 /**
- * Determine if a block describes a rule, pattern, anti-pattern, or convention
- * Supports both English and Danish signal words
- */
-const TYPE_SIGNALS = {
-  'anti-pattern': [
-    'never', 'don\'t', 'avoid', 'do not', 'bad', 'wrong', 'anti-pattern', 'deprecated', 'instead of',
-    'aldrig', 'undgå', 'brug ikke', 'forkert', '❌',
-  ],
-  'rule': [
-    'must', 'always', 'required', 'shall', 'enforce', 'mandatory',
-    'skal', 'altid', 'påkrævet', 'obligatorisk', 'vigtigt', 'VIGTIGT', 'non-negotiable', 'hårde regler',
-  ],
-  'pattern': [
-    'pattern', 'approach', 'technique', 'strategy', 'example', 'how to', 'implementation',
-    'mønster', 'tilgang', 'eksempel', 'sådan', '✅',
-  ],
-  'convention': [
-    'convention', 'standard', 'style', 'format', 'naming', 'prefer', 'recommendation',
-    'konvention', 'foretrækker', 'anbefaling',
-  ],
-};
-
-/**
  * Categories for Knowledge Fragments
  * Each keyword has an optional weight multiplier (default 1)
  */
@@ -58,44 +35,73 @@ const TITLE_CATEGORY_OVERRIDES = {
 };
 
 /**
- * Classify extracted blocks into Knowledge Fragments
- * @param {Array} blocks - Raw extracted blocks
- * @param {Array} stack - Detected stack
- * @param {{ owner: string, name: string, url: string }} repoInfo
- * @returns {Array} Knowledge Fragments
+ * Determine if a block describes a rule, pattern, anti-pattern, or convention
+ * Supports both English and Danish signal words
  */
-export function classifyFragments(blocks, stack, repoInfo) {
-  const stackStrings = stack.map(s => s.version ? `${s.name}@${s.version}` : s.name);
+const TYPE_SIGNALS = {
+  'anti-pattern': [
+    'never', 'don\'t', 'avoid', 'do not', 'bad', 'wrong', 'anti-pattern', 'deprecated', 'instead of',
+    'aldrig', 'undgå', 'brug ikke', 'forkert', '❌',
+  ],
+  'rule': [
+    'must', 'always', 'required', 'shall', 'enforce', 'mandatory',
+    'skal', 'altid', 'påkrævet', 'obligatorisk', 'vigtigt', 'VIGTIGT', 'non-negotiable', 'hårde regler',
+  ],
+  'pattern': [
+    'pattern', 'approach', 'technique', 'strategy', 'example', 'how to', 'implementation',
+    'mønster', 'tilgang', 'eksempel', 'sådan', '✅',
+  ],
+  'convention': [
+    'convention', 'standard', 'style', 'format', 'naming', 'prefer', 'recommendation',
+    'konvention', 'foretrækker', 'anbefaling',
+  ],
+};
 
-  return blocks.map(block => {
+/**
+ * Classify raw knowledge blocks into structured Knowledge Fragments
+ * @param {Array} rawBlocks - From extract.js
+ * @param {Array} stack - Detected stack from detect-stack.js
+ * @param {{ owner: string, name: string, url: string }} repoInfo
+ * @returns {Array} Classified Knowledge Fragments
+ */
+export function classifyFragments(rawBlocks, stack, repoInfo) {
+  const fragments = [];
+
+  for (const block of rawBlocks) {
     const category = detectCategory(block.content, block.section);
     const type = detectType(block.content);
     const tags = extractTags(block.content, stack);
+    const confidence = calculateConfidence(block);
 
-    // Generate deterministic ID
+    // Generate deterministic ID from content + source
     const id = createHash('sha256')
-      .update(`${repoInfo.owner}/${repoInfo.name}:${block.file}:${block.line}`)
+      .update(`${repoInfo.url}:${block.file}:${block.lineStart}`)
       .digest('hex')
-      .slice(0, 12);
+      .substring(0, 12);
 
-    return {
+    fragments.push({
       id,
-      stack: stackStrings,
+      stack: stack.map(s => s.version ? `${s.name}@${s.version}` : s.name),
       category,
       type,
-      title: block.section || block.file,
-      description: block.content.slice(0, 500),
+      title: generateTitle(block),
+      description: block.content.substring(0, 500),
+      fullContent: block.content,
       example: extractCodeExample(block.content),
       source: {
         repo: `${repoInfo.owner}/${repoInfo.name}`,
         file: block.file,
-        line: block.line,
-        url: `${repoInfo.url}/blob/main/${block.file}#L${block.line}`,
+        line: block.lineStart,
+        url: repoInfo.url
+          ? `${repoInfo.url}/blob/main/${block.file}#L${block.lineStart}`
+          : '',
       },
-      confidence: detectConfidence(block),
+      confidence,
       tags,
-    };
-  });
+    });
+  }
+
+  return fragments;
 }
 
 function detectCategory(content, sectionTitle = '') {
@@ -129,75 +135,71 @@ function detectCategory(content, sectionTitle = '') {
 }
 
 function detectType(content) {
-  const scores = {};
-  for (const [type, signals] of Object.entries(TYPE_SIGNALS)) {
-    scores[type] = signals.reduce((sum, signal) => {
-      const regex = new RegExp(signal, 'gi');
-      const matches = content.match(regex);
-      return sum + (matches ? matches.length : 0);
-    }, 0);
-  }
+  const lower = content.toLowerCase();
 
-  // Find highest scoring type
-  let bestType = 'convention';
-  let bestScore = 0;
-  for (const [type, score] of Object.entries(scores)) {
-    if (score > bestScore) {
-      bestScore = score;
-      bestType = type;
+  for (const [type, signals] of Object.entries(TYPE_SIGNALS)) {
+    if (signals.some(signal => lower.includes(signal))) {
+      return type;
     }
   }
 
-  return bestType;
+  return 'convention';
 }
 
-function detectConfidence(block) {
-  // CLAUDE.md and similar files are highest signal
-  const highSignalFiles = ['CLAUDE.md', '.cursorrules', '.clinerules', 'AGENTS.md', 'CONVENTIONS.md'];
-  if (highSignalFiles.includes(block.file)) return 'high';
+function extractTags(content, stack) {
+  const tags = new Set();
 
-  // Config files with explicit rules
-  if (block.file.includes('eslint') || block.file.includes('prettier')) return 'high';
+  // Add stack names as tags
+  for (const item of stack) {
+    tags.add(item.name);
+  }
 
-  // CONTRIBUTING.md and docs are good
-  if (block.file === 'CONTRIBUTING.md' || block.file.startsWith('docs/')) return 'medium';
+  // Extract technology mentions from content
+  const techTerms = [
+    'app-router', 'pages-router', 'server-component', 'client-component',
+    'middleware', 'api-route', 'server-action', 'ssr', 'ssg', 'isr',
+    'monorepo', 'workspace', 'turbo', 'pnpm',
+    'migration', 'schema', 'seed',
+    'dark-mode', 'responsive', 'a11y', 'accessibility',
+  ];
 
-  // README is lower signal
-  if (block.file === 'README.md') return 'medium';
+  const lower = content.toLowerCase();
+  for (const term of techTerms) {
+    if (lower.includes(term.replace('-', ' ')) || lower.includes(term)) {
+      tags.add(term);
+    }
+  }
 
-  return 'medium';
+  return Array.from(tags);
+}
+
+function calculateConfidence(block) {
+  // AI instruction files = highest confidence
+  if (block.category === 'ai-instructions') return 'high';
+  // Explicit conventions = high
+  if (block.category === 'conventions' || block.category === 'architecture') return 'high';
+  // Documentation = medium
+  if (block.priority <= 3) return 'medium';
+  // Config files = medium (machine-readable but less context)
+  return 'low';
+}
+
+function generateTitle(block) {
+  // Use section heading if available
+  if (block.section && block.section !== 'preamble') {
+    return block.section.replace(/^#+\s*/, '').substring(0, 100);
+  }
+
+  // Use first non-empty line
+  const firstLine = block.content.split('\n').find(l => l.trim().length > 0);
+  if (firstLine) {
+    return firstLine.replace(/^[#*\-\s]+/, '').substring(0, 100);
+  }
+
+  return `${block.file} — ${block.category}`;
 }
 
 function extractCodeExample(content) {
   const codeBlockMatch = content.match(/```[\w]*\n([\s\S]*?)```/);
   return codeBlockMatch ? codeBlockMatch[1].trim() : null;
-}
-
-function extractTags(content, stack) {
-  const tags = stack.map(s => s.name);
-
-  // Extract technology mentions from content
-  const techPatterns = [
-    { pattern: /app.?router/i, tag: 'app-router' },
-    { pattern: /pages.?router/i, tag: 'pages-router' },
-    { pattern: /server.?component/i, tag: 'server-component' },
-    { pattern: /client.?component|'use client'/i, tag: 'client-component' },
-    { pattern: /middleware/i, tag: 'middleware' },
-    { pattern: /api.?route/i, tag: 'api-route' },
-    { pattern: /migration/i, tag: 'migration' },
-    { pattern: /schema/i, tag: 'schema' },
-    { pattern: /docker/i, tag: 'docker' },
-    { pattern: /github.?action/i, tag: 'github-actions' },
-    { pattern: /rls|row.level.security/i, tag: 'rls' },
-    { pattern: /capacitor/i, tag: 'capacitor' },
-    { pattern: /pwa|service.worker|serwist/i, tag: 'pwa' },
-  ];
-
-  for (const { pattern, tag } of techPatterns) {
-    if (pattern.test(content) && !tags.includes(tag)) {
-      tags.push(tag);
-    }
-  }
-
-  return tags;
 }
