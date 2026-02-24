@@ -43,8 +43,13 @@ git clone https://github.com/cbroberg/cpm-knowledge-extractor.git
 cd cpm-knowledge-extractor
 npm install
 
-# Extract from a repo URL
+# Extract from a public repo (URL or shorthand)
 node src/index.js https://github.com/shadcn-ui/ui
+node src/index.js shadcn-ui/ui
+
+# Extract from your own private repos (uses gh CLI auth)
+node src/index.js webhousecode/fysiodk-aalborg-sport
+node src/index.js webhousecode/my-saas-project
 
 # Extract from a local repo
 node src/index.js /path/to/local/repo
@@ -53,8 +58,31 @@ node src/index.js /path/to/local/repo
 node src/index.js --batch repos.txt
 
 # Output to specific file
-node src/index.js https://github.com/vercel/next.js --output next-knowledge.json
+node src/index.js webhousecode/my-project --output my-knowledge.json
+
+# Verbose mode (see what's happening)
+node src/index.js webhousecode/my-project -v
 ```
+
+### Private Repo Access
+
+The extractor uses **`gh` CLI** for cloning, which inherits your GitHub authentication. This means:
+
+- ✅ All your private repos work out of the box (if you're logged in via `gh auth login`)
+- ✅ Shorthand `owner/repo` format works (no need for full URLs)
+- ✅ Falls back to plain `git clone` if `gh` is not installed (public repos only)
+
+```bash
+# Check your gh auth status
+gh auth status
+
+# If not logged in
+gh auth login
+```
+
+### Monorepo Support
+
+The extractor automatically detects monorepos (pnpm workspaces, yarn workspaces) and scans **all workspace packages** for dependencies — not just the root `package.json`. This correctly detects stacks like Next.js, Supabase, Tailwind etc. that typically live in `apps/web/package.json`.
 
 ## Configuration
 
@@ -66,23 +94,31 @@ cp .env.example .env
 
 ## Recommended Repos to Extract From
 
-For a Next.js + Tailwind + Supabase + Drizzle stack:
+### Your own projects first (most relevant knowledge)
 
 ```bash
-# Core frameworks
-node src/index.js https://github.com/vercel/next.js
-node src/index.js https://github.com/tailwindlabs/tailwindcss
-node src/index.js https://github.com/drizzle-team/drizzle-orm
-node src/index.js https://github.com/supabase/supabase
-
-# Reference implementations
-node src/index.js https://github.com/shadcn-ui/ui
-node src/index.js https://github.com/vercel/commerce
-node src/index.js https://github.com/vercel/ai
-
-# Good CLAUDE.md examples
-node src/index.js https://github.com/anthropics/anthropic-cookbook
+# Your own repos have the most relevant, battle-tested patterns
+node src/index.js your-org/your-main-project
+node src/index.js your-org/your-saas-app
 ```
+
+### Then reference repos for your stack
+
+For a **Next.js + Tailwind + Supabase + Drizzle** stack:
+
+```bash
+# UI framework reference
+node src/index.js shadcn-ui/ui
+node src/index.js vercel/ai
+
+# Good CLAUDE.md / convention examples
+node src/index.js anthropics/anthropic-cookbook
+node src/index.js t3-oss/create-t3-app
+node src/index.js steven-tey/dub
+node src/index.js calcom/cal.com
+```
+
+> **Tip:** Large framework repos (vercel/next.js, tailwindlabs/tailwindcss) contain useful docs but also massive codebases. Start with smaller, well-documented repos that match your actual patterns.
 
 ## How CPM Uses Knowledge Fragments
 

@@ -21,6 +21,9 @@ Standalone CLI tool that extracts best practices, conventions, and patterns from
 - Console output uses structured logging: [INFO], [WARN], [ERROR] prefixes
 - All file paths use path.join() — never string concatenation
 - Git operations use child_process.execSync — no git libraries
+- Clone uses `gh repo clone` (inherits CLI auth for private repos) with fallback to plain git
+- Classification must support both English and Danish signal words
+- Monorepo workspace packages (apps/*, packages/*) must be scanned for stack detection
 
 ## File Structure
 
