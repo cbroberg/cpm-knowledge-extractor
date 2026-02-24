@@ -1,22 +1,25 @@
 # Recommended repos to extract knowledge from
 # Lines starting with # are ignored
-# One repo URL per line
+# Supports both full URLs and owner/repo shorthand
 
-# Core frameworks
-https://github.com/vercel/next.js
-https://github.com/tailwindlabs/tailwindcss
-https://github.com/drizzle-team/drizzle-orm
-https://github.com/supabase/supabase
+# Your own projects (most relevant — uncomment and add yours)
+# webhousecode/fysiodk-aalborg-sport
+# webhousecode/your-other-project
 
-# UI / Components
-https://github.com/shadcn-ui/ui
-https://github.com/vercel/ai
+# UI / Components (well-documented, match typical cc stack)
+shadcn-ui/ui
+vercel/ai
 
-# Reference implementations
-https://github.com/vercel/commerce
-https://github.com/steven-tey/dub
-https://github.com/calcom/cal.com
+# Reference implementations with good CLAUDE.md
+steven-tey/dub
+calcom/cal.com
+t3-oss/create-t3-app
 
-# Good CLAUDE.md examples
-https://github.com/anthropics/anthropic-cookbook
-https://github.com/t3-oss/create-t3-app
+# AI instruction examples
+anthropics/anthropic-cookbook
+
+# Core frameworks (large repos — slower to process)
+# vercel/next.js
+# tailwindlabs/tailwindcss
+# drizzle-team/drizzle-orm
+# supabase/supabase
