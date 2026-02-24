@@ -1,0 +1,23 @@
+{
+  "name": "cpm-knowledge-extractor",
+  "version": "0.1.0",
+  "description": "Extract best practices and conventions from repos into structured Knowledge Fragments for CPM",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "cpm-extract": "./src/index.js"
+  },
+  "scripts": {
+    "extract": "node src/index.js",
+    "test": "node --test src/__tests__/"
+  },
+  "keywords": ["cpm", "claude-code", "prompt-contracts", "knowledge-extraction"],
+  "author": "Christian Broberg <cb@webhouse.dk>",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7"
+  }
+}

@@ -1,0 +1,22 @@
+# Recommended repos to extract knowledge from
+# Lines starting with # are ignored
+# One repo URL per line
+
+# Core frameworks
+https://github.com/vercel/next.js
+https://github.com/tailwindlabs/tailwindcss
+https://github.com/drizzle-team/drizzle-orm
+https://github.com/supabase/supabase
+
+# UI / Components
+https://github.com/shadcn-ui/ui
+https://github.com/vercel/ai
+
+# Reference implementations
+https://github.com/vercel/commerce
+https://github.com/steven-tey/dub
+https://github.com/calcom/cal.com
+
+# Good CLAUDE.md examples
+https://github.com/anthropics/anthropic-cookbook
+https://github.com/t3-oss/create-t3-app
